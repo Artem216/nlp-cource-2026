@@ -1,0 +1,12 @@
+Query:
+{query_text}
+
+Return {{"winner_doc_id":"<doc_id>"}} or {{"winner_doc_id":null}}.
+
+Document A:
+doc_id: {first_doc_id}
+{first_text}
+
+Document B:
+doc_id: {second_doc_id}
+{second_text}

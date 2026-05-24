@@ -1,0 +1,9 @@
+Запрос:
+{query_text}
+
+Верни JSON-объект вида {{"ordered_doc_ids":["best","...","worst"]}}.
+Используй каждый doc_id ровно один раз.
+
+Кандидаты:
+
+{candidates}

@@ -1,0 +1,8 @@
+Query:
+{query_text}
+
+Score each document independently. Return JSON in the format {{"results":[{{"doc_id":"...","grade":0}}]}}
+
+Candidates:
+
+{document_payload}

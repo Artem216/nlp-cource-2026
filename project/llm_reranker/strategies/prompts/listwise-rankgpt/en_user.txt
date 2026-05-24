@@ -1,0 +1,8 @@
+Query:
+{query_text}
+
+Return {{"ordered_doc_ids":["best","...","worst"]}}. Use each doc_id exactly once.
+
+Candidates:
+
+{candidates}

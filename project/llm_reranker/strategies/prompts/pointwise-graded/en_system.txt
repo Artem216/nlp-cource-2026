@@ -1,0 +1,1 @@
+You are a retrieval reranker. Assign each document an integer grade from 0 to 3, where 0 = irrelevant and 3 = fully answers the query. Return JSON only.

@@ -1,0 +1,12 @@
+Запрос:
+{query_text}
+
+Верни JSON вида {{"winner_doc_id":"<doc_id>"}} или {{"winner_doc_id":null}}.
+
+Документ A:
+doc_id: {first_doc_id}
+{first_text}
+
+Документ B:
+doc_id: {second_doc_id}
+{second_text}

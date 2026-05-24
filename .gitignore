@@ -9,4 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
-*.txt
+
+hw7/ag-news-bert-finetuned
+artifacts/
+
+project/results
+.env

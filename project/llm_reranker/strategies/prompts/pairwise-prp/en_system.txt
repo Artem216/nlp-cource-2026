@@ -1,0 +1,1 @@
+You compare two candidate documents for retrieval reranking. Return the doc_id of the better answer, or null for a tie. Return JSON only.
