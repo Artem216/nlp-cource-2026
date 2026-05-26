@@ -24,6 +24,7 @@ class OllamaProvider(BaseLLMProvider):
         max_retries: int,
         base_url: str,
         keep_alive: str | None,
+        max_tokens: int | None = None,
     ) -> None:
         super().__init__(
             model=model,
@@ -31,6 +32,7 @@ class OllamaProvider(BaseLLMProvider):
             temperature=temperature,
             timeout=timeout,
             max_retries=max_retries,
+            max_tokens=max_tokens,
         )
         self.base_url = base_url.rstrip("/")
         self.keep_alive = keep_alive
@@ -56,6 +58,8 @@ class OllamaProvider(BaseLLMProvider):
             "stream": False,
             "options": {"temperature": self.temperature},
         }
+        if self.max_tokens is not None:
+            payload["options"]["num_predict"] = self.max_tokens
         if self.keep_alive is not None:
             payload["keep_alive"] = self.keep_alive
         if schema is not None:

@@ -1,4 +1,4 @@
-"""LLM-as-reranker toolkit for ruMTEB experiments."""
+"""LLM-as-reranker toolkit for ruMTEB and rusBEIR experiments."""
 
 from .benchmark import ALLOWED_TASKS, OVERWRITE_STRATEGIES, PROFILE_DEFAULTS
 from .cache import RequestCache

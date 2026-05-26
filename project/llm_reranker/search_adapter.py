@@ -37,6 +37,7 @@ class LLMRerankerSearchModel:
         self._stats = {
             "queries_processed": 0,
             "queries_reranked": 0,
+            "queries_skipped_due_to_missing_docs": 0,
             "documents_reranked": 0,
             "candidates_total": 0,
         }
@@ -130,10 +131,17 @@ class LLMRerankerSearchModel:
             missing_prefix_ids = [doc_id for doc_id in prefix_ids if doc_id not in doc_lookup]
             if missing_prefix_ids:
                 logger.warning(
-                    "Skipping missing candidate documents: query_id=%s, missing=%s",
+                    "Query fallback to original order because prefix docs are missing: "
+                    "query_id=%s, missing=%s",
                     query_id,
                     missing_prefix_ids,
                 )
+                self._record(
+                    queries_processed=1,
+                    queries_skipped_due_to_missing_docs=1,
+                    candidates_total=len(ranked_doc_ids),
+                )
+                return query_id, make_descending_scores(ranked_doc_ids)
             prefix_docs = [
                 CandidateDocument(
                     doc_id=doc_id,

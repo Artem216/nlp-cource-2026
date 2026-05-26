@@ -11,18 +11,6 @@ from ..types import CandidateDocument, QueryExample, RerankResult
 logger = logging.getLogger(__name__)
 
 
-PAIRWISE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "winner_doc_id": {
-            "anyOf": [{"type": "string"}, {"type": "null"}],
-        }
-    },
-    "required": ["winner_doc_id"],
-    "additionalProperties": False,
-}
-
-
 class PairwisePRPRerankStrategy(BaseRerankStrategy):
     name = "pairwise-prp"
 
@@ -63,7 +51,7 @@ class PairwisePRPRerankStrategy(BaseRerankStrategy):
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
                     ],
-                    schema=PAIRWISE_SCHEMA,
+                    schema=self._schema_for_pair(first, second),
                     metadata={
                         "query_id": query.query_id,
                         "doc_ids": [first.doc_id, second.doc_id],
@@ -166,3 +154,22 @@ class PairwisePRPRerankStrategy(BaseRerankStrategy):
             second_text=self._truncate_document(second.text),
         )
         return system_prompt, user_prompt
+
+    @staticmethod
+    def _schema_for_pair(
+        first: CandidateDocument,
+        second: CandidateDocument,
+    ) -> dict[str, object]:
+        return {
+            "type": "object",
+            "properties": {
+                "winner_doc_id": {
+                    "anyOf": [
+                        {"type": "string", "enum": [first.doc_id, second.doc_id]},
+                        {"type": "null"},
+                    ],
+                }
+            },
+            "required": ["winner_doc_id"],
+            "additionalProperties": False,
+        }

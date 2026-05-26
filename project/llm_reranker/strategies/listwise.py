@@ -12,19 +12,6 @@ from ..types import CandidateDocument, QueryExample, RerankResult
 logger = logging.getLogger(__name__)
 
 
-LISTWISE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "ordered_doc_ids": {
-            "type": "array",
-            "items": {"type": "string"},
-        }
-    },
-    "required": ["ordered_doc_ids"],
-    "additionalProperties": False,
-}
-
-
 class ListwiseRankGPTRerankStrategy(BaseRerankStrategy):
     name = "listwise-rankgpt"
 
@@ -101,7 +88,7 @@ class ListwiseRankGPTRerankStrategy(BaseRerankStrategy):
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
                     ],
-                    schema=LISTWISE_SCHEMA,
+                    schema=self._schema_for_window(window_docs),
                     metadata={
                         "query_id": query.query_id,
                         "window_start": start,
@@ -216,3 +203,20 @@ class ListwiseRankGPTRerankStrategy(BaseRerankStrategy):
             candidates="\n\n".join(candidates),
         )
         return system_prompt, user_prompt
+
+    @staticmethod
+    def _schema_for_window(documents: Sequence[CandidateDocument]) -> dict[str, object]:
+        doc_ids = [document.doc_id for document in documents]
+        return {
+            "type": "object",
+            "properties": {
+                "ordered_doc_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": doc_ids},
+                    "minItems": len(doc_ids),
+                    "maxItems": len(doc_ids),
+                }
+            },
+            "required": ["ordered_doc_ids"],
+            "additionalProperties": False,
+        }

@@ -5,7 +5,7 @@ from typing import Any, Sequence
 
 import requests
 
-from .base import BaseLLMProvider, ProviderError, SchemaUnsupportedError
+from .base import BaseLLMProvider, SchemaUnsupportedError
 
 
 logger = logging.getLogger(__name__)
@@ -26,6 +26,7 @@ class OpenRouterProvider(BaseLLMProvider):
         api_key: str,
         site_url: str | None,
         app_name: str | None,
+        max_tokens: int | None = None,
     ) -> None:
         super().__init__(
             model=model,
@@ -33,6 +34,7 @@ class OpenRouterProvider(BaseLLMProvider):
             temperature=temperature,
             timeout=timeout,
             max_retries=max_retries,
+            max_tokens=max_tokens,
         )
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -71,6 +73,8 @@ class OpenRouterProvider(BaseLLMProvider):
             "messages": list(messages),
             "temperature": self.temperature,
         }
+        if self.max_tokens is not None:
+            payload["max_tokens"] = self.max_tokens
         if schema is not None:
             payload["response_format"] = {
                 "type": "json_schema",
@@ -102,12 +106,7 @@ class OpenRouterProvider(BaseLLMProvider):
         response.raise_for_status()
         logger.debug("OpenRouter chat response: status_code=%s", response.status_code)
         data = response.json()
-        try:
-            content = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            logger.exception("OpenRouter response is missing choices[0].message.content")
-            raise ProviderError("openrouter response does not contain choices[0].message.content") from exc
-        return content, data
+        return self._extract_openai_chat_content(data), data
 
     @staticmethod
     def _is_schema_error(response: requests.Response) -> bool:

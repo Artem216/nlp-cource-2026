@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from ..cache import RequestCache
 from ..utils import extract_json_from_text, json_hash
@@ -33,24 +32,27 @@ class BaseLLMProvider(ABC):
         temperature: float,
         timeout: float,
         max_retries: int,
+        max_tokens: int | None = None,
     ) -> None:
         self.model = model
         self.request_cache = request_cache
         self.temperature = temperature
         self.timeout = timeout
         self.max_retries = max_retries
+        self.max_tokens = max_tokens
         self._lock = threading.Lock()
         self._requests = 0
         self._schema_fallbacks = 0
         self._retries = 0
         logger.info(
             "Provider initialized: provider=%s, model=%s, temperature=%s, "
-            "timeout=%s, max_retries=%s, cache_enabled=%s",
+            "timeout=%s, max_retries=%s, max_tokens=%s, cache_enabled=%s",
             self.provider_name,
             self.model,
             self.temperature,
             self.timeout,
             self.max_retries,
+            self.max_tokens,
             self.request_cache is not None,
         )
 
@@ -68,6 +70,7 @@ class BaseLLMProvider(ABC):
             "requests": requests_count,
             "schema_fallbacks": schema_fallbacks,
             "retries": retries,
+            "max_tokens": self.max_tokens,
         }
 
     def generate_json(
@@ -89,14 +92,19 @@ class BaseLLMProvider(ABC):
             "metadata": metadata,
         }
         cache_key = json_hash(request_payload)
+        prompt_chars, prompt_bytes, role_chars = self._prompt_length_stats(messages)
         logger.debug(
             "Provider JSON request prepared: provider=%s, model=%s, namespace=%s, "
-            "schema=%s, metadata=%s, cache_key=%s",
+            "schema=%s, metadata=%s, prompt_chars=%s, prompt_bytes=%s, "
+            "role_chars=%s, cache_key=%s",
             self.provider_name,
             self.model,
             cache_namespace,
             schema is not None,
             metadata,
+            prompt_chars,
+            prompt_bytes,
+            role_chars,
             cache_key[:12],
         )
         if self.request_cache is not None:
@@ -115,6 +123,24 @@ class BaseLLMProvider(ABC):
         for attempt in range(1, self.max_retries + 1):
             started_at = time.perf_counter()
             try:
+                prompt_chars, prompt_bytes, role_chars = self._prompt_length_stats(
+                    effective_messages,
+                )
+                logger.info(
+                    "Provider JSON request prompt length: provider=%s, model=%s, "
+                    "namespace=%s, attempt=%s/%s, schema=%s, messages=%s, "
+                    "prompt_chars=%s, prompt_bytes=%s, role_chars=%s",
+                    self.provider_name,
+                    self.model,
+                    cache_namespace,
+                    attempt,
+                    self.max_retries,
+                    effective_schema is not None,
+                    len(effective_messages),
+                    prompt_chars,
+                    prompt_bytes,
+                    role_chars,
+                )
                 logger.debug(
                     "Provider JSON request attempt: provider=%s, namespace=%s, "
                     "attempt=%s/%s, schema=%s",
@@ -222,6 +248,22 @@ class BaseLLMProvider(ABC):
         )
         return forced
 
+    def _prompt_length_stats(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> tuple[int, int, dict[str, int]]:
+        total_chars = 0
+        total_bytes = 0
+        role_chars: dict[str, int] = {}
+        for message in messages:
+            role = str(message.get("role", "unknown") or "unknown")
+            content = str(message.get("content", "") or "")
+            content_chars = len(content)
+            total_chars += content_chars
+            total_bytes += len(content.encode("utf-8"))
+            role_chars[role] = role_chars.get(role, 0) + content_chars
+        return total_chars, total_bytes, role_chars
+
     def _coerce_json_payload(self, content: Any) -> Any:
         if isinstance(content, (dict, list)):
             return content
@@ -236,6 +278,49 @@ class BaseLLMProvider(ABC):
                 return extract_json_from_text("\n".join(text_parts))
         raise ProviderError(
             f"unsupported provider response payload: {type(content)!r}"
+        )
+
+    def _extract_openai_chat_content(self, payload: Mapping[str, Any]) -> Any:
+        try:
+            choice = payload["choices"][0]
+            message = choice["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            logger.exception(
+                "%s response is missing choices[0].message",
+                self.provider_name,
+            )
+            raise ProviderError(
+                f"{self.provider_name} response does not contain choices[0].message"
+            ) from exc
+        if not isinstance(choice, Mapping) or not isinstance(message, Mapping):
+            raise ProviderError(
+                f"{self.provider_name} response choices[0].message has unexpected type: "
+                f"{type(message)!r}"
+            )
+
+        content = message.get("content")
+        if content is not None:
+            return content
+
+        finish_reason = choice.get("finish_reason")
+        reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+        refusal = message.get("refusal")
+        message_keys = sorted(str(key) for key in message)
+        logger.error(
+            "%s response message.content is null: finish_reason=%s, "
+            "message_keys=%s, reasoning_chars=%s, refusal_present=%s",
+            self.provider_name,
+            finish_reason,
+            message_keys,
+            len(str(reasoning)),
+            refusal is not None,
+        )
+        raise ProviderError(
+            f"{self.provider_name} response message.content is null "
+            f"(finish_reason={finish_reason!r}, message_keys={message_keys}, "
+            f"reasoning_chars={len(str(reasoning))}). "
+            "For thinking models such as Qwen, try a larger --max-tokens value "
+            "or pass --disable-thinking when using --provider vllm."
         )
 
     @abstractmethod

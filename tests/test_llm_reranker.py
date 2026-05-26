@@ -10,7 +10,11 @@ from datasets import Dataset
 
 from project.llm_reranker.cache import RequestCache
 from project.llm_reranker.providers import VLLMProvider
-from project.llm_reranker.providers.base import BaseLLMProvider
+from project.llm_reranker.providers.base import (
+    BaseLLMProvider,
+    ProviderError,
+    SchemaUnsupportedError,
+)
 from project.llm_reranker.search_adapter import LLMRerankerSearchModel
 from project.llm_reranker.strategies.listwise import ListwiseRankGPTRerankStrategy
 from project.llm_reranker.strategies.pairwise import PairwisePRPRerankStrategy
@@ -32,9 +36,12 @@ class QueueProvider(BaseLLMProvider):
         )
         self.responses = list(responses)
         self.network_calls = 0
+        self.messages = []
+        self.schemas = []
 
     def _generate_content(self, *, messages, schema):
-        del messages, schema
+        self.messages.append(list(messages))
+        self.schemas.append(schema)
         self.network_calls += 1
         if not self.responses:
             raise RuntimeError("no fake responses left")
@@ -168,6 +175,28 @@ class ListwiseStrategyTests(unittest.TestCase):
         self.assertEqual(result.ordered_doc_ids, ["d5", "d1", "d6", "d2", "d3", "d4"])
         self.assertEqual(provider.network_calls, 2)
 
+    def test_listwise_ignores_invalid_duplicate_ids_and_appends_omitted_docs(self):
+        provider = QueueProvider(
+            [
+                {"ordered_doc_ids": ["d3", "missing", "d3", "d1"]},
+            ]
+        )
+        strategy = ListwiseRankGPTRerankStrategy(
+            provider=provider,
+            prompt_language="ru",
+            query_max_chars=500,
+            doc_max_chars=500,
+            window_size=3,
+            stride=1,
+        )
+        docs = [
+            CandidateDocument("d1", "doc1", 0),
+            CandidateDocument("d2", "doc2", 1),
+            CandidateDocument("d3", "doc3", 2),
+        ]
+        result = strategy.rerank(QueryExample("q1", "query"), docs)
+        self.assertEqual(result.ordered_doc_ids, ["d3", "d1", "d2"])
+
 
 class SearchAdapterTests(unittest.TestCase):
     def test_search_adapter_reranks_only_prefix_and_keeps_tail(self):
@@ -216,8 +245,66 @@ class SearchAdapterTests(unittest.TestCase):
             [5.0, 4.0, 3.0, 2.0, 1.0],
         )
 
+    def test_search_adapter_falls_back_to_original_order_when_prefix_doc_is_missing(self):
+        strategy = ReversingStrategy()
+        model = LLMRerankerSearchModel(
+            provider_name="fake",
+            provider_model_name="fake-model",
+            strategy=strategy,
+            rerank_top_k=3,
+            concurrency=1,
+        )
+        corpus = Dataset.from_list(
+            [
+                {"id": "d1", "title": "", "text": "doc1"},
+                {"id": "d3", "title": "", "text": "doc3"},
+                {"id": "d4", "title": "", "text": "doc4"},
+            ]
+        )
+        queries = Dataset.from_list([{"id": "q1", "text": "query"}])
+        model.index(
+            corpus,
+            task_metadata=None,
+            hf_split="test",
+            hf_subset="default",
+            encode_kwargs={},
+            num_proc=None,
+        )
+        results = model.search(
+            queries,
+            task_metadata=None,
+            hf_split="test",
+            hf_subset="default",
+            top_k=1000,
+            encode_kwargs={},
+            top_ranked={"q1": ["d1", "d2", "d3", "d4"]},
+            num_proc=None,
+        )
+        self.assertEqual(list(results["q1"].keys()), ["d1", "d2", "d3", "d4"])
+        self.assertEqual(strategy.calls, 0)
+        self.assertEqual(model.stats()["queries_skipped_due_to_missing_docs"], 1)
+
 
 class ProviderCacheRetryTests(unittest.TestCase):
+    def test_provider_logs_prompt_length_for_network_call(self):
+        provider = QueueProvider(['{"ok": true}'])
+
+        with self.assertLogs("project.llm_reranker.providers.base", level="INFO") as logs:
+            parsed = provider.generate_json(
+                cache_namespace="ns",
+                messages=[
+                    {"role": "system", "content": "abc"},
+                    {"role": "user", "content": "hello"},
+                ],
+            )
+
+        self.assertEqual(parsed, {"ok": True})
+        joined_logs = "\n".join(logs.output)
+        self.assertIn("Provider JSON request prompt length", joined_logs)
+        self.assertIn("prompt_chars=8", joined_logs)
+        self.assertIn("prompt_bytes=8", joined_logs)
+        self.assertIn("role_chars={'system': 3, 'user': 5}", joined_logs)
+
     def test_provider_retries_malformed_json_and_then_hits_cache(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = RequestCache(Path(temp_dir))
@@ -240,6 +327,31 @@ class ProviderCacheRetryTests(unittest.TestCase):
             self.assertEqual(provider.network_calls, 2)
             self.assertEqual(cache.stats()["hits"], 1)
 
+    def test_provider_falls_back_when_structured_output_schema_is_unsupported(self):
+        provider = QueueProvider(
+            [
+                SchemaUnsupportedError("json_schema is unsupported"),
+                '{"ok": true}',
+            ],
+            max_retries=2,
+        )
+        parsed = provider.generate_json(
+            cache_namespace="ns",
+            messages=[{"role": "user", "content": "hello"}],
+            schema={
+                "type": "object",
+                "properties": {"ok": {"type": "boolean"}},
+                "required": ["ok"],
+            },
+        )
+
+        self.assertEqual(parsed, {"ok": True})
+        self.assertEqual(provider.network_calls, 2)
+        self.assertIsNotNone(provider.schemas[0])
+        self.assertIsNone(provider.schemas[1])
+        self.assertIn("Return only valid JSON", provider.messages[1][-1]["content"])
+        self.assertEqual(provider.stats()["schema_fallbacks"], 1)
+
 
 class VLLMProviderTests(unittest.TestCase):
     def test_vllm_sends_openai_compatible_chat_completion_request(self):
@@ -251,6 +363,8 @@ class VLLMProviderTests(unittest.TestCase):
             max_retries=1,
             base_url="http://127.0.0.1:8000/v1/",
             api_key="token-abc123",
+            max_tokens=128,
+            disable_thinking=True,
         )
         response = mock.Mock()
         response.status_code = 200
@@ -287,8 +401,54 @@ class VLLMProviderTests(unittest.TestCase):
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["model"], "Qwen/Qwen3-4B-Instruct-2507")
         self.assertEqual(payload["temperature"], 0.0)
+        self.assertEqual(payload["max_tokens"], 128)
+        self.assertEqual(
+            payload["chat_template_kwargs"],
+            {"enable_thinking": False},
+        )
         self.assertEqual(payload["response_format"]["type"], "json_schema")
         self.assertTrue(payload["response_format"]["json_schema"]["strict"])
+
+    def test_vllm_null_content_raises_actionable_error(self):
+        provider = VLLMProvider(
+            model="Qwen/Qwen3-4B-Instruct-2507",
+            request_cache=None,
+            temperature=0.0,
+            timeout=5.0,
+            max_retries=1,
+            base_url="http://127.0.0.1:8000/v1/",
+            api_key="token-abc123",
+            max_tokens=128,
+        )
+        response = mock.Mock()
+        response.status_code = 200
+        response.json.return_value = {
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {
+                        "content": None,
+                        "reasoning_content": "thinking...",
+                    },
+                }
+            ],
+        }
+        response.raise_for_status = mock.Mock()
+
+        with (
+            mock.patch(
+                "project.llm_reranker.providers.vllm.requests.post",
+                return_value=response,
+            ),
+            self.assertRaisesRegex(
+                ProviderError,
+                "message.content is null.*--disable-thinking",
+            ),
+        ):
+            provider.generate_json(
+                cache_namespace="ns",
+                messages=[{"role": "user", "content": "hello"}],
+            )
 
     def test_runner_creates_vllm_provider_from_environment(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -301,6 +461,8 @@ class VLLMProviderTests(unittest.TestCase):
                 temperature=0.1,
                 timeout=10.0,
                 max_retries=2,
+                max_tokens=256,
+                disable_thinking=True,
             )
             with mock.patch.dict(
                 "os.environ",
@@ -314,6 +476,8 @@ class VLLMProviderTests(unittest.TestCase):
         self.assertIsInstance(provider, VLLMProvider)
         self.assertEqual(provider.base_url, "http://localhost:9000/v1")
         self.assertEqual(provider.api_key, "local-token")
+        self.assertEqual(provider.max_tokens, 256)
+        self.assertTrue(provider.disable_thinking)
 
 
 class RunnerSmokeTests(unittest.TestCase):
@@ -321,11 +485,13 @@ class RunnerSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir) / "run"
             fake_provider = QueueProvider([])
-            fake_strategy = PointwiseGradedRerankStrategy(
+            fake_strategy = ListwiseRankGPTRerankStrategy(
                 provider=fake_provider,
                 prompt_language="ru",
                 query_max_chars=500,
-                doc_max_chars=1400,
+                doc_max_chars=500,
+                window_size=4,
+                stride=2,
             )
             fake_tasks = [SimpleNamespace(metadata=SimpleNamespace(name="RuBQReranking"))]
             fake_results = SimpleNamespace(
@@ -345,7 +511,7 @@ class RunnerSmokeTests(unittest.TestCase):
                         "--model",
                         "fake-model",
                         "--strategy",
-                        "pointwise-graded",
+                        "listwise-rankgpt",
                         "--profile",
                         "quick",
                         "--max-queries-per-task",

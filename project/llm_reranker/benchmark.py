@@ -200,6 +200,7 @@ def build_summary(
     temperature: float,
     timeout: float,
     concurrency: int,
+    max_tokens: int | None,
     prompt_language: str,
     tasks: Sequence[Any],
     output_dir: Path,
@@ -225,6 +226,7 @@ def build_summary(
         "temperature": temperature,
         "timeout": timeout,
         "concurrency": concurrency,
+        "max_tokens": max_tokens,
         "prompt_language": prompt_language,
         "tasks": [task.metadata.name for task in tasks],
         "artifacts": {

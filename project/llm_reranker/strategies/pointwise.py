@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Sequence
+from typing import Sequence
 
 from .base import BaseRerankStrategy
 from .prompt_templates import render_prompt_template
@@ -9,27 +9,6 @@ from ..types import CandidateDocument, QueryExample, RerankResult
 
 
 logger = logging.getLogger(__name__)
-
-
-POINTWISE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "results": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "doc_id": {"type": "string"},
-                    "grade": {"type": "integer", "minimum": 0, "maximum": 3},
-                },
-                "required": ["doc_id", "grade"],
-                "additionalProperties": False,
-            },
-        }
-    },
-    "required": ["results"],
-    "additionalProperties": False,
-}
 
 
 class PointwiseGradedRerankStrategy(BaseRerankStrategy):
@@ -71,7 +50,7 @@ class PointwiseGradedRerankStrategy(BaseRerankStrategy):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            schema=POINTWISE_SCHEMA,
+            schema=self._schema_for_documents(documents),
             metadata={"query_id": query.query_id, "doc_ids": [doc.doc_id for doc in documents]},
         )
         parsed_results = response.get("results", response) if isinstance(response, dict) else response
@@ -135,3 +114,28 @@ class PointwiseGradedRerankStrategy(BaseRerankStrategy):
             document_payload=document_payload,
         )
         return system_prompt, user_prompt
+
+    @staticmethod
+    def _schema_for_documents(documents: Sequence[CandidateDocument]) -> dict[str, object]:
+        doc_ids = [document.doc_id for document in documents]
+        return {
+            "type": "object",
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "doc_id": {"type": "string", "enum": doc_ids},
+                            "grade": {"type": "integer", "minimum": 0, "maximum": 3},
+                        },
+                        "required": ["doc_id", "grade"],
+                        "additionalProperties": False,
+                    },
+                    "minItems": len(doc_ids),
+                    "maxItems": len(doc_ids),
+                }
+            },
+            "required": ["results"],
+            "additionalProperties": False,
+        }
